@@ -27,7 +27,12 @@ swiftc \
   -o "$MACOS_DIR/HingeGlass" \
   "$PROJECT_DIR"/Sources/*.swift
 
-"$PROJECT_DIR/test.sh"
+zsh "$PROJECT_DIR/test.sh"
+# Finder may decorate the generated bundle; this metadata prevents signing.
+# Keep security attributes (including quarantine) intact.
+if xattr -p com.apple.FinderInfo "$APP_DIR" >/dev/null 2>&1; then
+  xattr -d com.apple.FinderInfo "$APP_DIR"
+fi
 codesign --force --deep --sign "${SIGNING_IDENTITY:--}" "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
 echo "Built: $APP_DIR"

@@ -13,11 +13,11 @@ final class AppModel: ObservableObject {
     @Published var desktopImage: NSImage?
     @Published var importedFileName = ""
     @Published var useSensor = true
-    @Published var simulatedAngle = 105.0
+    @Published var simulatedAngle = LiveEffectPolicy.defaultOpenAngle
     @Published var controlsHidden = false
     @Published var showOriginal = false
     @Published var calibrationMessage = ""
-    @Published var openAngle = 120.0
+    @Published var openAngle = LiveEffectPolicy.defaultOpenAngle
     @Published var globalStatus = "实时桌面模式需要屏幕录制权限"
     @Published var globalRunning = false
     @Published var permissionsPreparing = true
@@ -27,7 +27,10 @@ final class AppModel: ObservableObject {
     var currentAngle: Double { useSensor && sensor.isAvailable ? sensor.angle : simulatedAngle }
 
     func saveOpenAngle() {
-        let value = currentAngle
+        setOpenAngle(currentAngle)
+    }
+
+    func setOpenAngle(_ value: Double) {
         guard value.isFinite, value >= 1, value <= 180 else {
             calibrationMessage = "请先打开屏幕，再保存展开终点"
             controlsHidden = false
@@ -35,15 +38,16 @@ final class AppModel: ObservableObject {
         }
         openAngle = value
         UserDefaults.standard.set(value, forKey: "calibratedOpenAngle")
-        calibrationMessage = "已保存展开终点"
+        calibrationMessage = "已保存：\(Int(value.rounded()))° 时完全清晰"
     }
 
     let sensor = LidAngleSensor()
 
     init() {
-        let saved = UserDefaults.standard.object(forKey: "calibratedOpenAngle") as? Double
-            ?? UserDefaults(suiteName: "studio.prototype.HingeGlass")?.double(forKey: "calibratedOpenAngle") ?? 120
-        if saved >= 1 && saved <= 180 { openAngle = saved }
+        openAngle = LiveEffectPolicy.openAngle(
+            saved: UserDefaults.standard.object(forKey: "calibratedOpenAngle") as? Double,
+            legacy: UserDefaults(suiteName: "studio.prototype.HingeGlass")?.object(forKey: "calibratedOpenAngle") as? Double
+        )
         sensor.start()
     }
 

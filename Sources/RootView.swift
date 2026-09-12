@@ -73,7 +73,7 @@ private struct SetupView: View {
                 .tracking(-2.2)
                 .padding(.top, 24)
 
-            Text("导入桌面截图，开始设置悬浮玻璃效果。调试界面可以设置你的 MacBook 展开点：将屏幕打开到日常使用的位置，保存为展开终点，效果将从 0° 过渡到该位置。")
+            Text("屏幕打开到设定角度，桌面就恢复清晰。默认终点为 100°，也可以直接保存你习惯的屏幕角度。导入截图还能手动预览悬浮玻璃效果。")
                 .font(.system(size: 17, weight: .regular))
                 .foregroundStyle(.white.opacity(0.62))
                 .lineSpacing(5)
@@ -185,6 +185,42 @@ private struct SetupView: View {
                     .font(.system(size: 12, weight: .medium))
                     .foregroundStyle(.white.opacity(0.5))
                     .lineLimit(1)
+            }
+
+            VStack(alignment: .leading, spacing: 12) {
+                HStack {
+                    Text("完全清晰的角度")
+                        .foregroundStyle(.white.opacity(0.65))
+                    Spacer()
+                    Text("\(Int(model.openAngle.rounded()))°")
+                        .font(.system(size: 24, weight: .semibold, design: .rounded))
+                        .monospacedDigit()
+                }
+                if sensor.isAvailable {
+                    Text("当前屏幕角度 \(Int(sensor.angle.rounded()))°")
+                        .foregroundStyle(.white.opacity(0.55))
+                        .monospacedDigit()
+                }
+                HStack(spacing: 12) {
+                    Button("恢复 100°") {
+                        model.setOpenAngle(LiveEffectPolicy.defaultOpenAngle)
+                    }
+                    Button("使用当前屏幕角度") {
+                        model.setOpenAngle(sensor.angle)
+                    }
+                    .disabled(!sensor.isAvailable)
+                }
+                .buttonStyle(FloatingControlStyle())
+                Text(model.calibrationMessage.isEmpty ? "达到此角度及以上，毛玻璃效果完全消退。" : model.calibrationMessage)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.white.opacity(0.55))
+            }
+            .font(.system(size: 14))
+            .padding(20)
+            .background(.white.opacity(0.045), in: RoundedRectangle(cornerRadius: 20))
+            .overlay {
+                RoundedRectangle(cornerRadius: 20)
+                    .stroke(.white.opacity(0.12), lineWidth: 1)
             }
         }
     }

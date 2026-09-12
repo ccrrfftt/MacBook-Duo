@@ -3,4 +3,7 @@
 DerivedData/
 *.xcuserstate
 xcuserdata/
-
+*.app/
+*.zip
+*.dSYM/
+.codex/
