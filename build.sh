@@ -2,7 +2,9 @@
 set -euo pipefail
 
 PROJECT_DIR="${0:A:h}"
-APP_DIR="$PROJECT_DIR/MacBook Duo.app"
+# Build outside file-provider folders, which can mutate bundle metadata while signing.
+BUILD_DIR=$(mktemp -d "${TMPDIR:-/tmp}/macbook-duo-build.XXXXXX")
+APP_DIR="$BUILD_DIR/MacBook Duo.app"
 CONTENTS_DIR="$APP_DIR/Contents"
 MACOS_DIR="$CONTENTS_DIR/MacOS"
 
@@ -33,6 +35,12 @@ zsh "$PROJECT_DIR/test.sh"
 if xattr -p com.apple.FinderInfo "$APP_DIR" >/dev/null 2>&1; then
   xattr -d com.apple.FinderInfo "$APP_DIR"
 fi
-codesign --force --deep --sign "${SIGNING_IDENTITY:--}" "$APP_DIR"
+SIGNING_ID="${SIGNING_IDENTITY:-}"
+if [[ -z "$SIGNING_ID" && -f "$PROJECT_DIR/.codex/signing-identity" ]]; then
+  SIGNING_ID=$(< "$PROJECT_DIR/.codex/signing-identity")
+fi
+codesign --force --deep --sign "${SIGNING_ID:--}" "$APP_DIR"
 codesign --verify --deep --strict "$APP_DIR"
+mkdir -p "$PROJECT_DIR/.build"
+printf '%s\n' "$APP_DIR" > "$PROJECT_DIR/.build/app-path.txt"
 echo "Built: $APP_DIR"

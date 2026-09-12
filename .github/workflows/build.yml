@@ -8,7 +8,7 @@ jobs:
       - name: Build and test
         run: zsh build.sh
       - name: Package development build
-        run: ditto -c -k --sequesterRsrc --keepParent "MacBook Duo.app" MacBook-Duo.zip
+        run: ditto -c -k --sequesterRsrc --keepParent "$(cat .build/app-path.txt)" MacBook-Duo.zip
       - uses: actions/upload-artifact@v4
         with:
           name: MacBook-Duo-development

@@ -22,9 +22,38 @@ enum LiveEffectPolicy {
         return min(1, max(0, 1 - max(0, angle + prediction) / endpoint))
     }
     static func captureFPS(remaining: Double, velocity: Double) -> Int32 {
-        remaining > 0.008 || abs(velocity) > 2 ? 30 : 2
+        remaining > 0.008 || abs(velocity) > 2 ? 30 : 1
     }
     static func retryDelay(failures: Int) -> TimeInterval {
         min(30, Double(max(1, failures)) * 2)
+    }
+}
+
+/// Only a successful configuration update advances the applied capture rate.
+struct CaptureRateState {
+    var desired: Int32
+    private(set) var applied: Int32
+    private var pending: Int32?
+    init(initial: Int32 = 30) { desired = initial; applied = initial }
+    mutating func begin() -> Int32? {
+        guard pending == nil, desired != applied else { return nil }
+        pending = desired
+        return pending
+    }
+    mutating func finish(succeeded: Bool) {
+        if succeeded, let pending { applied = pending }
+        pending = nil
+    }
+}
+
+enum SensorPollingPolicy {
+    static func interval(now: TimeInterval, lastMovement: TimeInterval) -> TimeInterval {
+        now - lastMovement < 0.6 ? 1.0 / 30 : 0.1
+    }
+}
+
+enum BackgroundPolicy {
+    static func shouldMonitor(settingsVisible: Bool, effectEnabled: Bool, suspended: Bool) -> Bool {
+        !suspended && (settingsVisible || effectEnabled)
     }
 }

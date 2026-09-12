@@ -6,106 +6,110 @@ struct HingeGlassApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     var body: some Scene {
         Settings { EmptyView() }
+            .commands {
+                CommandGroup(replacing: .appSettings) {
+                    Button("设置…") { appDelegate.showSettings() }
+                        .keyboardShortcut(",", modifiers: .command)
+                }
+            }
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    private var window: DesktopWindow?
+@MainActor
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+    private var window: NSWindow?
     private var model: AppModel?
-    private var screenObserver: NSObjectProtocol?
+    private var controller: GlobalDesktopController?
     private var keyMonitor: Any?
-    private var globalController: GlobalDesktopController?
+    private var hideObserver: NSObjectProtocol?
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         let model = AppModel()
         self.model = model
-        model.globalStatus = "正在检查首次启动的屏幕录制权限…"
-        Task { @MainActor in
-            let message = await ScreenCapturePermissionPreparation.prepare()
-            model.globalStatus = message ?? "实时桌面模式需要屏幕录制权限"
-            model.permissionsPreparing = false
-        }
-        let screen = NSScreen.main ?? NSScreen.screens.first!
-        let window = DesktopWindow(contentRect: screen.frame, styleMask: [.borderless],
-                                   backing: .buffered, defer: false)
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1060, height: 720),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable],
+                              backing: .buffered, defer: false)
         window.title = "MacBook Duo"
-        if let iconURL = Bundle.main.url(forResource: "MacBookDuo", withExtension: "png") {
-            NSApp.applicationIconImage = NSImage(contentsOf: iconURL)
-        }
-        window.backgroundColor = .black
-        window.isOpaque = true
-        window.hasShadow = false
+        window.minSize = NSSize(width: 980, height: 660)
         window.isReleasedWhenClosed = false
-        window.contentView = NSHostingView(rootView: RootView(model: model)
-            .ignoresSafeArea().preferredColorScheme(.dark))
+        window.delegate = self
+        window.backgroundColor = .black
+        window.contentView = NSHostingView(rootView: RootView(model: model).preferredColorScheme(.dark))
+        window.center()
         self.window = window
-        let globalController = GlobalDesktopController(model: model, setupWindow: window)
-        self.globalController = globalController
-        model.startGlobal = { [weak globalController] in globalController?.start() }
-        model.previewGlobal = { [weak globalController] in globalController?.preview() }
-        NSApp.presentationOptions = [.autoHideDock, .autoHideMenuBar]
-        NSApp.setActivationPolicy(.regular)
-        window.setFrame(screen.frame, display: true)
-        window.makeKeyAndOrderFront(nil)
-        NSApp.activate(ignoringOtherApps: true)
-        // Handle before AppKit's default Command-H (which hides the whole app).
-        // Restricted to this window so file dialogs retain their own shortcuts.
+        model.hideSettings = { [weak self] in self?.hideSettings() }
+        model.onDockVisibilityChange = { [weak self] in self?.applyDockVisibility() }
+        let controller = GlobalDesktopController(model: model)
+        self.controller = controller
+        controller.onShowSettings = { [weak self] in self?.showSettings() }
+        controller.onHideSettings = { [weak self] in self?.hideSettings() }
+        applyDockVisibility()
+        showSettings()
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self, NSApp.keyWindow === self.window, let model = self.model else { return event }
+            guard let self, NSApp.keyWindow === self.window, let model = self.model, model.page == .test else { return event }
             let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-            if modifiers == .command && event.charactersIgnoringModifiers?.lowercased() == "h" {
-                if model.page == .test && !event.isARepeat { model.controlsHidden.toggle() }
-                return nil
-            }
-            guard model.page == .test else { return event }
             if modifiers == .command {
                 switch event.charactersIgnoringModifiers?.lowercased() {
-                case "k":
-                    if !event.isARepeat { model.saveOpenAngle() }
-                    return nil
-                case "b":
-                    if !event.isARepeat { model.showOriginal.toggle() }
-                    return nil
+                case "h": if !event.isARepeat { model.controlsHidden.toggle() }; return nil
+                case "k": if !event.isARepeat { model.saveOpenAngle() }; return nil
+                case "b": if !event.isARepeat { model.showOriginal.toggle() }; return nil
                 default: break
                 }
             }
-            if event.keyCode == 53 {
-                model.controlsHidden = false
-                return nil
-            }
+            if event.keyCode == 53 { model.controlsHidden = false; return nil }
             return event
         }
-        screenObserver = NotificationCenter.default.addObserver(
-            forName: NSApplication.didChangeScreenParametersNotification, object: nil, queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.globalController?.screenConfigurationChanged() }
-            guard let window = self?.window, let screen = window.screen ?? NSScreen.main else { return }
-            window.setFrame(screen.frame, display: true)
+        hideObserver = NotificationCenter.default.addObserver(forName: NSApplication.didHideNotification,
+                                                              object: NSApp, queue: .main) { [weak self] _ in
+            MainActor.assumeIsolated { self?.model?.settingsVisible = false }
         }
     }
 
-    @MainActor @objc private func openSettings() {
-        globalController?.showSetup()
+    private func applyDockVisibility() {
+        guard let model else { return }
+        NSApp.setActivationPolicy(model.showDockIcon ? .regular : .accessory)
     }
+
+    func showSettings() {
+        model?.returnToSetup()
+        model?.settingsVisible = true
+        window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    private func hideSettings() {
+        window?.orderOut(nil)
+        model?.settingsVisible = false
+    }
+
+    func windowShouldClose(_ sender: NSWindow) -> Bool {
+        hideSettings()
+        return false // Reuse the settings window; closing it never stops the engine.
+    }
+
+    func windowDidMiniaturize(_ notification: Notification) { model?.settingsVisible = false }
+    func windowDidDeminiaturize(_ notification: Notification) { model?.settingsVisible = true }
+
+    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
+        showSettings()
+        return true
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
 
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu()
-        let item = NSMenuItem(title: "打开设置", action: #selector(openSettings), keyEquivalent: "")
+        let item = NSMenuItem(title: "打开设置", action: #selector(openFromDock), keyEquivalent: "")
         item.target = self
         menu.addItem(item)
         return menu
     }
 
-    func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        globalController?.showSetup()
-        return true
-    }
+    @objc private func openFromDock() { showSettings() }
 
-    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
-        false
+    func applicationWillTerminate(_ notification: Notification) {
+        controller?.shutdown()
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        if let hideObserver { NotificationCenter.default.removeObserver(hideObserver) }
     }
-}
-
-final class DesktopWindow: NSWindow {
-    override var canBecomeKey: Bool { true }
-    override var canBecomeMain: Bool { true }
 }

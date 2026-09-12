@@ -43,15 +43,15 @@ private struct SetupView: View {
                     .blur(radius: 120)
                     .offset(x: -proxy.size.width * 0.35, y: -proxy.size.height * 0.35)
 
-                HStack(spacing: 70) {
+                HStack(spacing: 32) {
                     setupCopy
-                        .frame(maxWidth: 500, alignment: .leading)
+                        .frame(maxWidth: 460, alignment: .leading)
 
                     screenshotPreview
-                        .frame(width: min(460, proxy.size.width * 0.40))
+                        .frame(width: min(400, proxy.size.width * 0.36))
                 }
-                .padding(.horizontal, 74)
-                .padding(.vertical, 64)
+                .padding(.horizontal, 36)
+                .padding(.vertical, 28)
             }
             .ignoresSafeArea()
         }
@@ -69,7 +69,8 @@ private struct SetupView: View {
             .foregroundStyle(.white.opacity(0.55))
 
             Text("让界面随屏幕\n一起展开。")
-                .font(.system(size: 52, weight: .semibold, design: .rounded))
+                .font(.system(size: 42, weight: .semibold, design: .rounded))
+                .fixedSize(horizontal: false, vertical: true)
                 .tracking(-2.2)
                 .padding(.top, 24)
 
@@ -115,9 +116,10 @@ private struct SetupView: View {
                 .font(.system(size: 12))
                 .foregroundStyle(.white.opacity(0.34))
                 .padding(.top, 14)
-            Button("启用实时桌面效果") { model.startGlobal?() }
+            Button(model.globalRunning ? "停止实时桌面效果" : "启用实时桌面效果") {
+                model.globalRunning ? model.stopGlobal?() : model.startGlobal?()
+            }
                 .buttonStyle(GlassButtonStyle(prominent: true))
-                .disabled(model.globalRunning || model.permissionsPreparing)
                 .padding(.top, 22)
             Text(model.globalStatus)
                 .font(.system(size: 12))
@@ -130,6 +132,9 @@ private struct SetupView: View {
                 .font(.system(size: 11))
                 .foregroundStyle(.white.opacity(0.45))
                 .padding(.top, 6)
+            Button("打开屏幕录制权限设置…") { model.openPermissionSettings?() }
+                .buttonStyle(.link)
+                .padding(.top, 8)
         }
     }
 
@@ -222,6 +227,19 @@ private struct SetupView: View {
                 RoundedRectangle(cornerRadius: 20)
                     .stroke(.white.opacity(0.12), lineWidth: 1)
             }
+
+            VStack(alignment: .leading, spacing: 12) {
+                Toggle("在 Dock 中显示图标", isOn: $model.showDockIcon)
+                    .toggleStyle(.checkbox)
+                Text("关闭窗口后继续在菜单栏运行。点击双方框图标可重新打开设置或退出。")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                Button("收起设置，后台运行") { model.hideSettings?() }
+                    .buttonStyle(FloatingControlStyle())
+            }
+            .font(.system(size: 13))
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 8)
         }
     }
 }

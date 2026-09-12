@@ -17,12 +17,28 @@ final class AppModel: ObservableObject {
     @Published var controlsHidden = false
     @Published var showOriginal = false
     @Published var calibrationMessage = ""
-    @Published var openAngle = LiveEffectPolicy.defaultOpenAngle
-    @Published var globalStatus = "实时桌面模式需要屏幕录制权限"
+    @Published var openAngle = LiveEffectPolicy.defaultOpenAngle {
+        didSet { onConfigurationChange?() }
+    }
+    @Published var globalStatus = "效果已停止"
     @Published var globalRunning = false
-    @Published var permissionsPreparing = true
+    @Published var settingsVisible = true {
+        didSet { onConfigurationChange?() }
+    }
+    @Published var showDockIcon = UserDefaults.standard.bool(forKey: "showDockIcon") {
+        didSet {
+            UserDefaults.standard.set(showDockIcon, forKey: "showDockIcon")
+            onDockVisibilityChange?()
+            onConfigurationChange?()
+        }
+    }
     var startGlobal: (() -> Void)?
+    var stopGlobal: (() -> Void)?
     var previewGlobal: (() -> Void)?
+    var hideSettings: (() -> Void)?
+    var openPermissionSettings: (() -> Void)?
+    var onConfigurationChange: (() -> Void)?
+    var onDockVisibilityChange: (() -> Void)?
 
     var currentAngle: Double { useSensor && sensor.isAvailable ? sensor.angle : simulatedAngle }
 
@@ -48,7 +64,6 @@ final class AppModel: ObservableObject {
             saved: UserDefaults.standard.object(forKey: "calibratedOpenAngle") as? Double,
             legacy: UserDefaults(suiteName: "studio.prototype.HingeGlass")?.object(forKey: "calibratedOpenAngle") as? Double
         )
-        sensor.start()
     }
 
     func importScreenshot() {
@@ -84,8 +99,4 @@ final class AppModel: ObservableObject {
         }
     }
 
-    func toggleFullScreen() {
-        guard let window = NSApp.keyWindow, let screen = window.screen else { return }
-        window.setFrame(screen.frame, display: true)
-    }
 }

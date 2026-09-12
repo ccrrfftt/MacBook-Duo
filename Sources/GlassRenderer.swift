@@ -28,6 +28,10 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
     private var eyeDistance: Float = 2.4
     private var lastTime = CACurrentMediaTime()
     private var videoCache: CVMetalTextureCache?
+    var onSettled: (() -> Void)?
+    private(set) var uploadCount = 0
+    private(set) var drawCount = 0
+    var pipelineAvailable: Bool { pipeline != nil }
     var readyForDisplay: Bool { texture != nil && pipeline != nil }
     var settled: Bool { abs(displayed - target) < 0.03 }
 
@@ -60,6 +64,7 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         blit.endEncoding()
         command.addCompletedHandler { _ in _ = wrapped; _ = buffer }
         command.commit()
+        uploadCount += 1
         isPaused = false
     }
 
@@ -90,21 +95,25 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
     required init(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
 
     func configure(image: NSImage, tilt: Double, frost: Double, distance: Double) {
+        var imageChanged = false
         if sourceImage !== image, let device,
            let cgImage = image.cgImage(forProposedRect: nil, context: nil, hints: nil) {
             do {
                 texture = try MTKTextureLoader(device: device).newTexture(cgImage: cgImage,
                     options: [.SRGB: false, .generateMipmaps: true])
                 sourceImage = image
+                imageChanged = true
             } catch { NSLog("Image texture failed: %@", String(describing: error)) }
         }
+        let changed = target != Float(tilt) || self.frost != Float(frost) || eyeDistance != Float(distance)
         target = Float(tilt)
         self.frost = Float(frost)
         eyeDistance = Float(distance)
-        isPaused = false
+        if imageChanged || changed || !settled { isPaused = false }
     }
     func mtkView(_ view: MTKView, drawableSizeWillChange size: CGSize) { isPaused = false }
     func draw(in view: MTKView) {
+        guard window?.isVisible == true, !isHiddenOrHasHiddenAncestor else { isPaused = true; return }
         guard let pipeline, let texture, let queue,
               let drawable = currentDrawable, let pass = currentRenderPassDescriptor,
               let command = queue.makeCommandBuffer(), let encoder = command.makeRenderCommandEncoder(descriptor: pass)
@@ -122,7 +131,12 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         encoder.endEncoding()
         command.present(drawable)
         command.commit()
-        if abs(target - displayed) < 0.005 { isPaused = true }
+        drawCount += 1
+        if abs(target - displayed) < 0.005 {
+            displayed = target
+            isPaused = true
+            onSettled?()
+        }
     }
 
     static let shader = """
@@ -157,12 +171,16 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         float lod = max(0.0f, log2(max(1.0f, radius * 0.22)));
         float3 color = float3(0);
         // Mip-filtered disk sampling: soft spatially varying frost, no hard bands.
-        for (int i = 0; i < 24; i++) {
-            float r = sqrt((float(i) + 0.5) / 24.0) * radius;
-            float a = float(i) * 2.39996323;
-            color += sampleScene(tex, hit + float2(cos(a), sin(a)) * r, p, lod);
+        if (radius < 0.5) {
+            color = sampleScene(tex, hit, p, 0);
+        } else {
+            for (int i = 0; i < 24; i++) {
+                float r = sqrt((float(i) + 0.5) / 24.0) * radius;
+                float a = float(i) * 2.39996323;
+                color += sampleScene(tex, hit + float2(cos(a), sin(a)) * r, p, lod);
+            }
+            color /= 24.0;
         }
-        color /= 24.0;
         float depth = abs(gap) / p.size.y;
         color *= 1.0 - min(depth * 0.45, 0.35);
         // Grazing reflection remains screen-attached; the image moves behind it.

@@ -9,13 +9,17 @@ import QuartzCore
 final class LidAngleSensor: ObservableObject {
     @Published private(set) var angle = 105.0
     private(set) var lastSuccessfulUpdate = Date.distantPast
-    @Published private(set) var velocity = 0.0
+    private(set) var velocity = 0.0
+    var onChange: (() -> Void)?
     @Published private(set) var isAvailable = false
     @Published private(set) var statusText = "正在查找铰链传感器…"
 
     private var manager: IOHIDManager?
     private var device: IOHIDDevice?
     private var timer: Timer?
+    private var opened = false
+    private var interval = 0.1
+    private var lastMovement = -Double.infinity
     private var report = [UInt8](repeating: 0, count: 8)
     private var lastAngle = 105.0
     private var lastTime = CACurrentMediaTime()
@@ -44,20 +48,36 @@ final class LidAngleSensor: ObservableObject {
             return
         }
 
-        guard IOHIDDeviceOpen(device, noOptions) == kIOReturnSuccess else {
+        guard opened || IOHIDDeviceOpen(device, noOptions) == kIOReturnSuccess else {
             isAvailable = false
             statusText = "传感器无法打开 · 可使用手动模拟"
             return
         }
-
+        opened = true
         isAvailable = true
         statusText = "您的设备支持铰链传感器"
-        let timer = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self] _ in
-            Task { @MainActor in self?.poll() }
+        schedule(interval: 0.1)
+        poll()
+    }
+
+    func stop() {
+        timer?.invalidate()
+        timer = nil
+        if opened, let device { IOHIDDeviceClose(device, noOptions) }
+        opened = false
+        velocity = 0
+        filteredVelocity = 0
+    }
+
+    private func schedule(interval: TimeInterval) {
+        timer?.invalidate()
+        self.interval = interval
+        let timer = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.poll() }
         }
+        timer.tolerance = interval * 0.2
         self.timer = timer
         RunLoop.main.add(timer, forMode: .common)
-        poll()
     }
 
     private func discoverDevice() {
@@ -137,14 +157,22 @@ final class LidAngleSensor: ObservableObject {
         guard measured.isFinite, measured >= 0, measured <= 180 else { return }
 
         let now = CACurrentMediaTime()
+        let changed = abs(measured - angle) >= 0.025
+        if changed { lastMovement = now }
         let deltaTime = max(now - lastTime, 1.0 / 120.0)
         let instantVelocity = (measured - lastAngle) / deltaTime
         filteredVelocity = filteredVelocity * 0.72 + instantVelocity * 0.28
 
-        angle = measured
+        if changed { angle = measured }
         lastSuccessfulUpdate = Date()
-        velocity = filteredVelocity
+        let previousVelocity = velocity
+        velocity = abs(filteredVelocity) < 0.1 ? 0 : filteredVelocity
         lastAngle = measured
         lastTime = now
+        let nextInterval = SensorPollingPolicy.interval(now: now, lastMovement: lastMovement)
+        let rateChanged = nextInterval != interval
+        if rateChanged { schedule(interval: nextInterval) }
+        let motionChanged = (abs(velocity) > 2) != (abs(previousVelocity) > 2)
+        if changed || abs(velocity - previousVelocity) > 0.25 || motionChanged || rateChanged { onChange?() }
     }
 }
