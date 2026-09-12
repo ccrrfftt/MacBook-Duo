@@ -18,6 +18,21 @@ struct GlassSurface: NSViewRepresentable {
 }
 
 final class GlassMetalView: MTKView, MTKViewDelegate {
+    private static let sharedDevice = MTLCreateSystemDefaultDevice()
+    private static let sharedPipeline: MTLRenderPipelineState? = {
+        guard let device = sharedDevice else { return nil }
+        do {
+            let library = try device.makeLibrary(source: shader, options: nil)
+            let descriptor = MTLRenderPipelineDescriptor()
+            descriptor.vertexFunction = library.makeFunction(name: "vertexMain")
+            descriptor.fragmentFunction = library.makeFunction(name: "glassMain")
+            descriptor.colorAttachments[0].pixelFormat = .bgra8Unorm
+            return try device.makeRenderPipelineState(descriptor: descriptor)
+        } catch {
+            NSLog("Hinge Glass renderer: %@", String(describing: error))
+            return nil
+        }
+    }()
     private var queue: MTLCommandQueue?
     private var pipeline: MTLRenderPipelineState?
     private var texture: MTLTexture?
@@ -59,6 +74,13 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         isPaused = true
     }
 
+    func releaseFrameResources() {
+        texture = nil
+        sourceImage = nil
+        releaseDrawables()
+        if let videoCache { CVMetalTextureCacheFlush(videoCache, 0) }
+    }
+
     func receive(_ buffer: CVPixelBuffer) {
         guard let device, let queue, let cache = videoCache else { return }
         let width = CVPixelBufferGetWidth(buffer), height = CVPixelBufferGetHeight(buffer)
@@ -87,7 +109,7 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
     }
 
     init() {
-        super.init(frame: .zero, device: MTLCreateSystemDefaultDevice())
+        super.init(frame: .zero, device: Self.sharedDevice)
         colorPixelFormat = .bgra8Unorm
         framebufferOnly = true
         preferredFramesPerSecond = 60
@@ -100,16 +122,7 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         guard let device else { return }
         queue = device.makeCommandQueue()
         CVMetalTextureCacheCreate(nil, nil, device, nil, &videoCache)
-        do {
-            let library = try device.makeLibrary(source: Self.shader, options: nil)
-            let descriptor = MTLRenderPipelineDescriptor()
-            descriptor.vertexFunction = library.makeFunction(name: "vertexMain")
-            descriptor.fragmentFunction = library.makeFunction(name: "glassMain")
-            descriptor.colorAttachments[0].pixelFormat = colorPixelFormat
-            pipeline = try device.makeRenderPipelineState(descriptor: descriptor)
-        } catch {
-            NSLog("Hinge Glass renderer: %@", String(describing: error))
-        }
+        pipeline = Self.sharedPipeline
         delegate = self
     }
     required init(coder: NSCoder) { fatalError("init(coder:) is unavailable") }
@@ -217,16 +230,12 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         float lod = max(0.0f, log2(max(1.0f, radius * 0.22)));
         float3 color = float3(0);
         // Mip-filtered disk sampling: soft spatially varying frost, no hard bands.
-        if (radius < 0.5) {
-            color = sampleScene(tex, hit, p, 0);
-        } else {
-            for (int i = 0; i < 24; i++) {
-                float r = sqrt((float(i) + 0.5) / 24.0) * radius;
-                float a = float(i) * 2.39996323;
-                color += sampleScene(tex, hit + float2(cos(a), sin(a)) * r, p, lod);
-            }
-            color /= 24.0;
+        for (int i = 0; i < 24; i++) {
+            float r = sqrt((float(i) + 0.5) / 24.0) * radius;
+            float a = float(i) * 2.39996323;
+            color += sampleScene(tex, hit + float2(cos(a), sin(a)) * r, p, lod);
         }
+        color /= 24.0;
         float depth = abs(gap) / p.size.y;
         color *= 1.0 - min(depth * 0.45, 0.35);
         // Grazing reflection remains screen-attached; the image moves behind it.

@@ -12,9 +12,11 @@ final class GlobalDesktopController {
     private let capture = CaptureSession()
     private let lifecycle = DesktopLifecycle()
     private var overlay: DesktopOverlay?
+    private var reusableOverlay: DesktopOverlay?
     private var phase = Phase.stopped
     private var sleepReasons = Set<String>()
     private var startTask: Task<Void, Never>?
+    private var preparationTask: Task<Void, Never>?
     private var healthTimer: Timer?
     private var retryTimer: Timer?
     private var failures = 0
@@ -27,7 +29,9 @@ final class GlobalDesktopController {
     private var previewRequested = false
     private var didShutdown = false
     private var diagnosticTicks = 0
-    private let diagnostics = CommandLine.arguments.contains("--diagnostics")
+    private let diagnosticsRequested = CommandLine.arguments.contains("--diagnostics")
+    private let diagnosticsDeadline = CACurrentMediaTime() + 600
+    private var diagnostics: Bool { diagnosticsRequested && CACurrentMediaTime() < diagnosticsDeadline }
     private let logger = Logger(subsystem: "studio.prototype.HingeGlass.Global", category: "Lifecycle")
     var onShowSettings: (() -> Void)?
     var onHideSettings: (() -> Void)?
@@ -104,41 +108,52 @@ final class GlobalDesktopController {
             else { stop(message: "铰链传感器不可用，可使用截图预览。") }
             return
         }
+        guard CGPreflightScreenCaptureAccess() || (!automatically && CGRequestScreenCaptureAccess()) else {
+            stop(message: CaptureSession.Failure.permission.localizedDescription)
+            return
+        }
         if !automatically { failures = 0 }
-        setStatus("正在启动实时效果…")
+        phase = .running // Armed; a clear desktop does not need a capture stream.
+        if previewRequested {
+            previewUntil = Date().addingTimeInterval(8)
+            previewRequested = false
+        }
+        startHealthTimer()
+        prepareResources()
+        if !automatically { onHideSettings?() }
+        updateEffect()
+        setStatus("效果已启用；清晰时停止桌面捕获，合拢屏幕后按需启动")
+        logger.info("Effect armed; capture starts only when glass is needed")
+    }
+
+    private func startCaptureIfNeeded() {
+        guard startTask == nil, overlay == nil else { return }
+        startedAt = Date()
+        let triggeredAt = CACurrentMediaTime()
         startTask = Task { @MainActor [weak self] in
             guard let self else { return }
             do {
-                let fps = LiveEffectPolicy.captureFPS(remaining: remaining, velocity: model.sensor.velocity)
-                let screen = try await capture.start(fps: fps, allowPermissionPrompt: !automatically)
-                guard !Task.isCancelled, phase == .starting else { return }
-                overlay = try DesktopOverlay(screen: screen)
+                let screen = try await capture.start()
+                guard !Task.isCancelled, phase == .running else { return }
+                overlay = try preparedOverlay(for: screen)
+                overlay?.onReady = { [weak self] in
+                    guard let self, self.diagnostics else { return }
+                    self.logger.info("Transition: first drawable ready in \((CACurrentMediaTime() - triggeredAt) * 1000) ms")
+                }
                 overlay?.onSettled = { [weak self] in
-                    guard let self, self.remaining == 0 else { return }
-                    if self.diagnostics { self.logger.info("Transition: clear frame presented; hiding overlay") }
-                    self.overlay?.hide()
-                    self.updateEffect()
+                    guard let self, self.tilt == 0 else { return }
+                    if self.diagnostics { self.logger.info("Transition: clear frame presented; stopping capture") }
+                    self.releaseVisuals()
                     self.refreshMenu()
                 }
-                phase = .running
-                startedAt = Date()
-                if previewRequested {
-                    previewUntil = Date().addingTimeInterval(8)
-                    previewRequested = false
-                }
                 startTask = nil
-                startHealthTimer()
-                if !automatically { onHideSettings?() }
                 updateEffect()
-                setStatus("效果已启用，关闭设置窗口后继续在菜单栏运行")
-                logger.info("Effect started")
             } catch is CancellationError {
                 return
             } catch {
                 guard !Task.isCancelled else { return }
                 startTask = nil
-                if automatically { captureFailed(error) }
-                else { stop(message: error.localizedDescription); onShowSettings?() }
+                captureFailed(error)
             }
         }
     }
@@ -155,13 +170,46 @@ final class GlobalDesktopController {
     }
 
     private func releaseCapture() {
-        startTask?.cancel()
-        startTask = nil
+        preparationTask?.cancel()
+        preparationTask = nil
+        capture.invalidatePreparation()
         healthTimer?.invalidate()
         healthTimer = nil
         retryTimer?.invalidate()
         retryTimer = nil
-        overlay?.hide()
+        releaseVisuals()
+        reusableOverlay = nil
+    }
+
+    private func preparedOverlay(for screen: NSScreen) throws -> DesktopOverlay {
+        if reusableOverlay?.matches(screen: screen) != true {
+            reusableOverlay = try DesktopOverlay(screen: screen)
+        }
+        return reusableOverlay!
+    }
+
+    private func prepareResources() {
+        guard preparationTask == nil else { return }
+        preparationTask = Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let screen = try await capture.prepare()
+                guard !Task.isCancelled else { return }
+                _ = try preparedOverlay(for: screen)
+                preparationTask = nil
+                logger.info("Capture metadata and empty renderer prepared; no pixels captured")
+            } catch {
+                guard !Task.isCancelled else { return }
+                preparationTask = nil // A real trigger can retry and report the error.
+            }
+        }
+    }
+
+    private func releaseVisuals() {
+        guard startTask != nil || overlay != nil || capture.hasStream else { return }
+        startTask?.cancel()
+        startTask = nil
+        overlay?.hide(releaseFrames: true)
         overlay = nil
         latestFrame = nil
         latestFrameAt = -Double.infinity
@@ -213,30 +261,28 @@ final class GlobalDesktopController {
         }
     }
 
-    private var remaining: Double {
-        LiveEffectPolicy.remaining(angle: model.sensor.angle, velocity: model.sensor.velocity,
-                                   endpoint: model.openAngle, preview: Date() < previewUntil)
+    private var tilt: Double {
+        Date() < previewUntil ? LiveEffectPolicy.previewTilt :
+            LiveEffectPolicy.visualTilt(angle: model.sensor.angle, endpoint: model.openAngle, velocity: model.sensor.velocity)
     }
 
     private func updateEffect() {
-        guard phase == .running, sleepReasons.isEmpty, let overlay else { return }
-        guard !model.settingsVisible else {
-            overlay.hide()
-            capture.setRate(1)
+        guard phase == .running, sleepReasons.isEmpty else { return }
+        let angle = tilt
+        guard DesktopTransitionPolicy.needsCapture(tilt: angle, presenting: overlay?.isPresenting ?? false,
+                                                  settingsVisible: model.settingsVisible) else {
+            releaseVisuals()
             return
         }
-        let amount = remaining
-        capture.setRate(DesktopTransitionPolicy.captureFPS(remaining: amount,
-                        velocity: model.sensor.velocity, presenting: overlay.isPresenting))
-        guard amount > 0 || overlay.isPresenting else { return }
-        // Wait for capture to catch up after the idle rate changes. Never expose
-        // the cached one-FPS frame (or a retained old tilt) on entry.
+        guard let overlay else { startCaptureIfNeeded(); return }
+        // A new stream must deliver its first fresh frame before the overlay
+        // appears. Old frames are released completely when capture stops.
         if !overlay.isPresenting {
             guard DesktopTransitionPolicy.canBegin(frameAge: CACurrentMediaTime() - latestFrameAt) else { return }
             if diagnostics { logger.info("Transition: preparing fresh frame, age=\(CACurrentMediaTime() - self.latestFrameAt)") }
         }
         let needsUpload = !overlay.isPresenting || uploadedSequence != frameSequence
-        overlay.present(buffer: needsUpload ? latestFrame : nil, angle: amount * 80)
+        overlay.present(buffer: needsUpload ? latestFrame : nil, angle: angle)
         if needsUpload && latestFrame != nil { uploadedSequence = frameSequence }
     }
 
@@ -260,7 +306,7 @@ final class GlobalDesktopController {
     private func checkHealth() {
         guard phase == .running else { return }
         if Date().timeIntervalSince(model.sensor.lastSuccessfulUpdate) > 2 ||
-            (latestFrame == nil && Date().timeIntervalSince(startedAt) > 8) {
+            ((startTask != nil || overlay != nil) && latestFrame == nil && Date().timeIntervalSince(startedAt) > 8) {
             failures += 1
             suspend(message: "等待传感器或首帧恢复")
             scheduleRetry()
@@ -272,7 +318,7 @@ final class GlobalDesktopController {
         if diagnostics {
             diagnosticTicks += 1
             if diagnosticTicks % 5 == 0 {
-                logger.info("Performance: frames=\(self.frameSequence) uploads=\(self.overlay?.uploadCount ?? 0) draws=\(self.overlay?.drawCount ?? 0) visible=\(self.overlay?.isVisible ?? false)")
+                logger.info("Performance: frames=\(self.frameSequence) uploads=\(self.overlay?.uploadCount ?? 0) draws=\(self.overlay?.drawCount ?? 0) visible=\(self.overlay?.isVisible ?? false) capture=\(self.capture.hasStream)")
             }
         }
     }
@@ -291,8 +337,10 @@ final class GlobalDesktopController {
     }
 
     private func refreshMenu() {
+        let activity = overlay?.isVisible == true ? "效果显示中" :
+            (startTask != nil || capture.hasStream ? "准备画面…" : "待命 · 未捕获桌面")
         let text = phase == .running
-            ? "\(overlay?.isVisible == true ? "效果显示中" : "后台运行") · \(Int(model.sensor.angle.rounded()))° / 终点 \(Int(model.openAngle.rounded()))°"
+            ? "\(activity) · \(Int(model.sensor.angle.rounded()))° / 终点 \(Int(model.openAngle.rounded()))°"
             : model.globalStatus
         controls.update(status: text, enabled: enabled, showDock: model.showDockIcon)
     }

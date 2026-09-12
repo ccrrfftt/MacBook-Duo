@@ -9,8 +9,12 @@ private final class DesktopGlassPanel: NSPanel {
 final class DesktopOverlay {
     private let panel: NSPanel
     private let renderer = GlassMetalView()
+    private let screenID: CGDirectDisplayID?
+    private let screenFrame: NSRect
+    private let screenScale: CGFloat
     private var preparing = false
     private var requestedAngle = 0.0
+    var onReady: (() -> Void)?
     var isPresenting: Bool { panel.isVisible }
     var isVisible: Bool { panel.isVisible && !preparing }
     var uploadCount: Int { renderer.uploadCount }
@@ -22,6 +26,9 @@ final class DesktopOverlay {
 
     init(screen: NSScreen) throws {
         guard renderer.device != nil, renderer.pipelineAvailable else { throw CaptureSession.Failure.noGPU }
+        screenID = screen.displayID
+        screenFrame = screen.frame
+        screenScale = screen.backingScaleFactor
         panel = DesktopGlassPanel(contentRect: screen.frame, styleMask: [.borderless, .nonactivatingPanel],
                                   backing: .buffered, defer: false, screen: screen)
         panel.hidesOnDeactivate = false
@@ -42,7 +49,12 @@ final class DesktopOverlay {
             // revealed. AppKit must not crossfade the window over the desktop.
             self.panel.alphaValue = 1
             self.renderer.setLiveAngle(self.requestedAngle)
+            self.onReady?()
         }
+    }
+
+    func matches(screen: NSScreen) -> Bool {
+        screen.displayID == screenID && screen.frame == screenFrame && screen.backingScaleFactor == screenScale
     }
 
     func present(buffer: CVPixelBuffer?, angle: Double) {
@@ -61,10 +73,11 @@ final class DesktopOverlay {
         if !preparing { renderer.setLiveAngle(angle) }
     }
 
-    func hide() {
+    func hide(releaseFrames: Bool = false) {
         if panel.isVisible { panel.orderOut(nil) }
         preparing = false
         requestedAngle = 0
         renderer.endLivePresentation()
+        if releaseFrames { renderer.releaseFrameResources() }
     }
 }

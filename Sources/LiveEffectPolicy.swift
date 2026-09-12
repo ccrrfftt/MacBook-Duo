@@ -13,6 +13,8 @@ enum LiveEffectPolicy {
         return defaultOpenAngle
     }
 
+    static let previewTilt = 28.0
+
     static func remaining(angle: Double, velocity: Double, endpoint: Double, preview: Bool) -> Double {
         if preview { return 0.35 }
         guard angle.isFinite, velocity.isFinite, endpoint.isFinite, endpoint > 0 else { return 0 }
@@ -24,8 +26,11 @@ enum LiveEffectPolicy {
         let prediction = max(-4, min(0, velocity * 0.04)) * distance * distance * (3 - 2 * distance)
         return min(1, max(0, 1 - max(0, angle + prediction) / endpoint))
     }
-    static func captureFPS(remaining: Double, velocity: Double) -> Int32 {
-        remaining > 0 || abs(velocity) > 2 ? 30 : 1
+    static func visualTilt(angle: Double, endpoint: Double, strength: Double = 1, velocity: Double = 0) -> Double {
+        guard strength.isFinite, strength > 0 else { return 0 }
+        let amount = remaining(angle: angle, velocity: velocity, endpoint: endpoint, preview: false)
+        // Preserve the upstream visual response and screenshot strength curve.
+        return 80 * (1 - pow(1 - amount, 1 / strength))
     }
     static func retryDelay(failures: Int) -> TimeInterval {
         min(30, Double(max(1, failures)) * 2)
@@ -33,30 +38,13 @@ enum LiveEffectPolicy {
 }
 
 /// A hidden overlay may only start from a recent frame. Animation back to clear
-/// still needs live capture, even after the physical angle has reached zero.
+/// keeps its stream until the zero-angle frame has actually been presented.
 enum DesktopTransitionPolicy {
     static func canBegin(frameAge: TimeInterval) -> Bool {
         frameAge.isFinite && frameAge >= 0 && frameAge <= 1.0 / 15
     }
-    static func captureFPS(remaining: Double, velocity: Double, presenting: Bool) -> Int32 {
-        presenting ? 30 : LiveEffectPolicy.captureFPS(remaining: remaining, velocity: velocity)
-    }
-}
-
-/// Only a successful configuration update advances the applied capture rate.
-struct CaptureRateState {
-    var desired: Int32
-    private(set) var applied: Int32
-    private var pending: Int32?
-    init(initial: Int32 = 30) { desired = initial; applied = initial }
-    mutating func begin() -> Int32? {
-        guard pending == nil, desired != applied else { return nil }
-        pending = desired
-        return pending
-    }
-    mutating func finish(succeeded: Bool) {
-        if succeeded, let pending { applied = pending }
-        pending = nil
+    static func needsCapture(tilt: Double, presenting: Bool, settingsVisible: Bool) -> Bool {
+        !settingsVisible && (tilt > 0 || presenting)
     }
 }
 

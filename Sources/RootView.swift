@@ -255,10 +255,14 @@ private struct TestView: View {
         model.useSensor && sensor.isAvailable ? sensor.angle : model.simulatedAngle
     }
 
+    private var tilt: Double {
+        LiveEffectPolicy.visualTilt(angle: angle, endpoint: model.openAngle, strength: strength)
+    }
+
     var body: some View {
         ZStack {
             if let image = model.desktopImage {
-                GlassSurface(image: image, tilt: model.showOriginal ? 0 : 80 * (1 - pow(min(model.openAngle, max(0, angle)) / model.openAngle, 1 / strength)),
+                GlassSurface(image: image, tilt: model.showOriginal ? 0 : tilt,
                              frost: frost, distance: distance)
                     .ignoresSafeArea()
             }
@@ -281,7 +285,7 @@ private struct TestView: View {
                             Circle().fill(model.useSensor && sensor.isAvailable ? Color.green : Color.orange)
                                 .frame(width: 7, height: 7)
                             Text("\(Int(angle.rounded()))°").monospacedDigit()
-                            Text("0–\(Int(model.openAngle.rounded()))°").foregroundStyle(.secondary)
+                            Text("清晰终点 \(Int(model.openAngle.rounded()))° · 倾斜 \(Int(tilt.rounded()))°").foregroundStyle(.secondary)
                             Spacer()
                             Toggle("原图对比 ⌘B", isOn: $model.showOriginal).toggleStyle(.checkbox)
                             Button("保存展开终点 ⌘K") { model.saveOpenAngle() }
