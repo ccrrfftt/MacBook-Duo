@@ -129,8 +129,12 @@ final class CaptureSession: NSObject, @preconcurrency SCStreamOutput, SCStreamDe
 
     private func configuration(fps: Int32, screen: NSScreen) -> SCStreamConfiguration {
         let result = SCStreamConfiguration()
-        result.width = Int(screen.frame.width)
-        result.height = Int(screen.frame.height)
+        // Match the Metal view's backing pixels; point-sized capture visibly
+        // softened text the instant an otherwise clear overlay appeared.
+        result.width = Int((screen.frame.width * screen.backingScaleFactor).rounded())
+        result.height = Int((screen.frame.height * screen.backingScaleFactor).rounded())
+        result.captureResolution = .best
+        result.colorSpaceName = CGColorSpace.sRGB
         result.pixelFormat = kCVPixelFormatType_32BGRA
         result.minimumFrameInterval = CMTime(value: 1, timescale: fps)
         result.queueDepth = 3

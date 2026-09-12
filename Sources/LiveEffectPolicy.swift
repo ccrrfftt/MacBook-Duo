@@ -18,14 +18,28 @@ enum LiveEffectPolicy {
         guard angle.isFinite, velocity.isFinite, endpoint.isFinite, endpoint > 0 else { return 0 }
         // The saved endpoint always means clear, even during a closing movement.
         guard angle < endpoint else { return 0 }
-        let prediction = max(-4, min(0, velocity * 0.04))
+        // Fade prediction out at the clear endpoint; a hard cutoff used to add
+        // up to four degrees of effect as soon as the lid crossed the boundary.
+        let distance = min(1, max(0, (endpoint - angle) / 8))
+        let prediction = max(-4, min(0, velocity * 0.04)) * distance * distance * (3 - 2 * distance)
         return min(1, max(0, 1 - max(0, angle + prediction) / endpoint))
     }
     static func captureFPS(remaining: Double, velocity: Double) -> Int32 {
-        remaining > 0.008 || abs(velocity) > 2 ? 30 : 1
+        remaining > 0 || abs(velocity) > 2 ? 30 : 1
     }
     static func retryDelay(failures: Int) -> TimeInterval {
         min(30, Double(max(1, failures)) * 2)
+    }
+}
+
+/// A hidden overlay may only start from a recent frame. Animation back to clear
+/// still needs live capture, even after the physical angle has reached zero.
+enum DesktopTransitionPolicy {
+    static func canBegin(frameAge: TimeInterval) -> Bool {
+        frameAge.isFinite && frameAge >= 0 && frameAge <= 1.0 / 15
+    }
+    static func captureFPS(remaining: Double, velocity: Double, presenting: Bool) -> Int32 {
+        presenting ? 30 : LiveEffectPolicy.captureFPS(remaining: remaining, velocity: velocity)
     }
 }
 

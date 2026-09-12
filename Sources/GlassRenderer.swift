@@ -28,17 +28,35 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
     private var eyeDistance: Float = 2.4
     private var lastTime = CACurrentMediaTime()
     private var videoCache: CVMetalTextureCache?
+    private var revision = 0
+    private var firstFramePending = false
+    var onFirstFrameReady: (() -> Void)?
     var onSettled: (() -> Void)?
     private(set) var uploadCount = 0
     private(set) var drawCount = 0
     var pipelineAvailable: Bool { pipeline != nil }
-    var readyForDisplay: Bool { texture != nil && pipeline != nil }
     var settled: Bool { abs(displayed - target) < 0.03 }
 
     func setLiveAngle(_ angle: Double) {
         guard Float(angle) != target || !settled else { return }
         target = Float(angle)
+        revision += 1
         isPaused = false
+    }
+
+    func beginLivePresentation() {
+        revision += 1
+        target = 0
+        displayed = 0
+        lastTime = CACurrentMediaTime()
+        firstFramePending = true
+        isPaused = false
+    }
+
+    func endLivePresentation() {
+        revision += 1 // Invalidate GPU callbacks from the previous presentation.
+        firstFramePending = false
+        isPaused = true
     }
 
     func receive(_ buffer: CVPixelBuffer) {
@@ -75,7 +93,9 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         preferredFramesPerSecond = 60
         isPaused = true
         enableSetNeedsDisplay = false
-        clearColor = MTLClearColorMake(0.015, 0.018, 0.025, 1)
+        clearColor = MTLClearColorMake(0, 0, 0, 0)
+        (layer as? CAMetalLayer)?.isOpaque = false
+        (layer as? CAMetalLayer)?.colorspace = CGColorSpace(name: CGColorSpace.sRGB)
         autoresizingMask = [.width, .height]
         guard let device else { return }
         queue = device.makeCommandQueue()
@@ -106,6 +126,7 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
             } catch { NSLog("Image texture failed: %@", String(describing: error)) }
         }
         let changed = target != Float(tilt) || self.frost != Float(frost) || eyeDistance != Float(distance)
+        if changed { revision += 1 }
         target = Float(tilt)
         self.frost = Float(frost)
         eyeDistance = Float(distance)
@@ -122,6 +143,8 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         let dt = min(max(now - lastTime, 1.0 / 120), 0.05)
         lastTime = now
         displayed += (target - displayed) * Float(1 - exp(-dt / 0.045))
+        let atRest = abs(target - displayed) < 0.005
+        if atRest { displayed = target } // Encode the exact endpoint, not the preceding almost-clear frame.
         var parameters = [Float(drawableSize.width), Float(drawableSize.height),
                           displayed, frost, eyeDistance, Float(texture.width) / Float(texture.height), 0, 0]
         encoder.setRenderPipelineState(pipeline)
@@ -129,14 +152,37 @@ final class GlassMetalView: MTKView, MTKViewDelegate {
         encoder.setFragmentBytes(&parameters, length: parameters.count * MemoryLayout<Float>.size, index: 0)
         encoder.drawPrimitives(type: .triangle, vertexStart: 0, vertexCount: 3)
         encoder.endEncoding()
+        let token = revision
+        let renderedAngle = displayed
+        if firstFramePending {
+            firstFramePending = false
+            command.addCompletedHandler { [weak self] completed in
+                guard completed.status == .completed else { return }
+                DispatchQueue.main.async {
+                    guard let self, self.revision == token else { return }
+                    self.onFirstFrameReady?()
+                }
+            }
+        } else if atRest {
+            // Committing commands is earlier than displaying them. Removing the
+            // panel there could skip the final frame and visibly jump to clear.
+            drawable.addPresentedHandler { [weak self] presented in
+                let wasPresented = presented.presentedTime > 0
+                DispatchQueue.main.async {
+                    guard let self, self.revision == token,
+                          self.target == renderedAngle, self.displayed == renderedAngle else { return }
+                    guard wasPresented else {
+                        self.isPaused = false // Retry a dropped final drawable.
+                        return
+                    }
+                    self.onSettled?()
+                }
+            }
+        }
         command.present(drawable)
         command.commit()
         drawCount += 1
-        if abs(target - displayed) < 0.005 {
-            displayed = target
-            isPaused = true
-            onSettled?()
-        }
+        if atRest { isPaused = true }
     }
 
     static let shader = """

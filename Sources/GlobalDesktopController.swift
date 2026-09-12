@@ -1,6 +1,7 @@
 import AppKit
 import CoreVideo
 import OSLog
+import QuartzCore
 
 /// Coordinates state transitions. Frames and sensor changes drive visual work.
 @MainActor
@@ -18,6 +19,7 @@ final class GlobalDesktopController {
     private var retryTimer: Timer?
     private var failures = 0
     private var latestFrame: CVPixelBuffer?
+    private var latestFrameAt = -Double.infinity
     private var frameSequence = 0
     private var uploadedSequence = -1
     private var startedAt = Date()
@@ -47,6 +49,7 @@ final class GlobalDesktopController {
         capture.onFrame = { [weak self] buffer in
             guard let self, self.sleepReasons.isEmpty else { return }
             self.latestFrame = buffer // Retain one CPU-side frame while the overlay is hidden.
+            self.latestFrameAt = CACurrentMediaTime()
             self.frameSequence += 1
             self.updateEffect()
         }
@@ -112,7 +115,9 @@ final class GlobalDesktopController {
                 overlay = try DesktopOverlay(screen: screen)
                 overlay?.onSettled = { [weak self] in
                     guard let self, self.remaining == 0 else { return }
+                    if self.diagnostics { self.logger.info("Transition: clear frame presented; hiding overlay") }
                     self.overlay?.hide()
+                    self.updateEffect()
                     self.refreshMenu()
                 }
                 phase = .running
@@ -159,6 +164,7 @@ final class GlobalDesktopController {
         overlay?.hide()
         overlay = nil
         latestFrame = nil
+        latestFrameAt = -Double.infinity
         uploadedSequence = -1
         capture.stop()
     }
@@ -220,10 +226,16 @@ final class GlobalDesktopController {
             return
         }
         let amount = remaining
-        capture.setRate(LiveEffectPolicy.captureFPS(remaining: amount, velocity: model.sensor.velocity))
-        guard amount > 0.008 || overlay.isVisible else { return }
-        if amount == 0 && overlay.settled { overlay.hide(); return }
-        let needsUpload = uploadedSequence != frameSequence
+        capture.setRate(DesktopTransitionPolicy.captureFPS(remaining: amount,
+                        velocity: model.sensor.velocity, presenting: overlay.isPresenting))
+        guard amount > 0 || overlay.isPresenting else { return }
+        // Wait for capture to catch up after the idle rate changes. Never expose
+        // the cached one-FPS frame (or a retained old tilt) on entry.
+        if !overlay.isPresenting {
+            guard DesktopTransitionPolicy.canBegin(frameAge: CACurrentMediaTime() - latestFrameAt) else { return }
+            if diagnostics { logger.info("Transition: preparing fresh frame, age=\(CACurrentMediaTime() - self.latestFrameAt)") }
+        }
+        let needsUpload = !overlay.isPresenting || uploadedSequence != frameSequence
         overlay.present(buffer: needsUpload ? latestFrame : nil, angle: amount * 80)
         if needsUpload && latestFrame != nil { uploadedSequence = frameSequence }
     }
