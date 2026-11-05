@@ -35,7 +35,7 @@ jobs:
     name: Test and verify the package
     needs: plan
     if: needs.plan.outputs.check == 'true'
-    runs-on: macos-15
+    runs-on: macos-26
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6

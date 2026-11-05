@@ -61,7 +61,7 @@ GitHub Actions 构建并打包开发产物，不执行公证。签名优先使�
 
 ### 发布更新
 
-准备新版本时，在同一个 PR 更新 `Info.plist` 的版本与构建号、本文首页的版本与「测试版」或「正式版」标记，并在 [版本记录](CHANGELOG.md) 中新增 `## [版本号] - YYYY-MM-DD` 条目。发布以 `CFBundleShortVersionString` 为准，仅增加构建号不会创建新版本。版本更新合入默认分支并通过验证后，GitHub Release 提供 Apple Silicon 的 App 压缩包及 SHA-256 校验文件；标为「测试版」的版本会作为预发布。
+准备新版本时，在同一个 PR 更新 `Info.plist` 的版本与构建号、本文首页的版本与「测试版」或「正式版」标记，并在 [版本记录](CHANGELOG.md) 中新增 `## [版本号] - YYYY-MM-DD` 条目。发布以 `CFBundleShortVersionString` 为准，仅增加构建号不会创建新版本。版本更新合入默认分支并通过验证后，GitHub Release 提供 Apple Silicon 的 App 压缩包及 SHA-256 校验文件；标为「测试版」的版本会作为预发布。 常规构建测试使用 macOS 15，发布包在 macOS 26 上构建，并以 macOS 15 为最低部署目标。
 
 ## 参考与归属
 
