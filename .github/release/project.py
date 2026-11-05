@@ -67,7 +67,8 @@ def package(output):
         subprocess.run(["ditto", "-x", "-k", zip_path, extracted], check=True)
         restored = extracted / "MacBook Duo.app"
         subprocess.run(["codesign", "--verify", "--deep", "--strict", restored], check=True)
-        subprocess.run(["lipo", "-verify_arch", "arm64", restored / "Contents/MacOS/HingeGlass"], check=True)
+        executable = restored / "Contents/MacOS/HingeGlass"
+        subprocess.run(["lipo", executable, "-verify_arch", "arm64"], check=True)
         if (restored / "Contents/Info.plist").read_bytes() != Path("Info.plist").read_bytes():
             raise SystemExit("Packaged Info.plist differs from the checked-out release")
         data = zip_path.read_bytes()
