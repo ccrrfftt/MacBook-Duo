@@ -59,6 +59,10 @@ zsh build.sh                       # 构建、测试、签名，不启动
 
 GitHub Actions 构建并打包开发产物，不执行公证。签名优先使用显式指定的 `SIGNING_IDENTITY`，其次读取被 Git 忽略的本地 `.codex/signing-identity`；均未设置时使用 ad-hoc 签名。固定的开发证书有助于让系统在更新后识别同一应用。
 
+### 发布更新
+
+准备新版本时，在同一个 PR 更新 `Info.plist` 的版本与构建号、本文首页的版本与「测试版」或「正式版」标记，并在 [版本记录](CHANGELOG.md) 中新增 `## [版本号] - YYYY-MM-DD` 条目。发布以 `CFBundleShortVersionString` 为准，仅增加构建号不会创建新版本。版本更新合入默认分支并通过验证后，GitHub Release 提供 Apple Silicon 的 App 压缩包及 SHA-256 校验文件；标为「测试版」的版本会作为预发布。
+
 ## 参考与归属
 
 - [上游项目](https://github.com/jlxc2001/MacBook-Duo)
